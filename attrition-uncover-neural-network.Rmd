@@ -1,0 +1,240 @@
+---
+title: "Employee Attrition Uncover"
+author: "Alfan"
+date: "4/1/2020"
+output: 
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float:
+      collapsed: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(GGally)
+library(reshape)
+library(keras)
+library(rsample)
+library(recipes)
+library(yardstick)
+library(caret)
+library(plotly)
+
+options(scipen = 100)
+```
+
+
+```{r}
+employee <- read.csv("data/WA_Fn-UseC_-HR-Employee-Attrition.csv")
+```
+
+```{r}
+glimpse(employee)
+```
+
+```{r}
+summary(employee)
+```
+
+```{r}
+employee <- employee %>%
+  mutate(
+    Education = as.factor(Education),
+    EnvironmentSatisfaction = as.factor(EnvironmentSatisfaction),
+    JobInvolvement = as.factor(JobInvolvement),
+    JobLevel = as.factor(JobLevel),
+    JobSatisfaction = as.factor(JobSatisfaction),
+    PerformanceRating = as.factor(PerformanceRating),
+    RelationshipSatisfaction = as.factor(RelationshipSatisfaction),
+    StockOptionLevel = as.factor(StockOptionLevel),
+    WorkLifeBalance = as.factor(WorkLifeBalance),
+    Attrition = factor(Attrition, levels = c("Yes", "No"))
+  )
+
+summary(employee)
+```
+
+```{r}
+str(employee)
+```
+
+
+```{r}
+set.seed(100)
+
+initial_split <- initial_split(employee, prop = 0.8, strata = "Attrition")
+
+training_split <- initial_split(training(initial_split), prop = 0.8, strata = "Attrition")
+```
+
+
+```{r}
+rec <- recipe(Attrition ~ ., training(training_split)) %>% 
+  step_rm(StandardHours, EmployeeCount, EmployeeNumber, Over18) %>% 
+  step_nzv(all_predictors()) %>% 
+  step_downsample(Attrition, ratio = 1/1, seed = 100) %>% 
+  step_center(all_numeric()) %>% 
+  step_scale(all_numeric()) %>% 
+  step_dummy(all_nominal(), -Attrition, one_hot = FALSE) %>% 
+  prep(strings_as_factors = FALSE)
+
+
+data_train <- juice(rec)
+data_val <- bake(rec, testing(training_split))
+data_test <- bake(rec, testing(initial_split))
+
+```
+
+
+```{r}
+train_y <- to_categorical(as.numeric(data_train$Attrition)-1)
+train_x <- data_train %>% 
+  select(-Attrition) %>% 
+  data.matrix()
+
+val_y <- to_categorical(as.numeric(data_val$Attrition)-1)
+val_x <- data_val %>% 
+  select(-Attrition) %>% 
+  data.matrix()
+
+test_y <- to_categorical(as.numeric(data_test$Attrition)-1)
+test_x <- data_test %>% 
+  select(-Attrition) %>% 
+  data.matrix()
+```
+
+```{r}
+input_n <- ncol(train_x)
+
+model <- keras_model_sequential() %>%
+  layer_dense(input_shape = input_n,
+              units = 62,
+              activation = "relu") %>%
+  # layer_dropout(rate = 0.4) %>% 
+  layer_dense(units = 32,
+              activation = "relu") %>%
+  # layer_dropout(rate = 0.4) %>% 
+  layer_dense(units = 2,
+              activation = "sigmoid")
+
+model %>%
+  compile(optimizer = "adam",
+          metric = "accuracy",
+          loss = "binary_crossentropy")
+
+model
+```
+
+
+```{r}
+set.seed(100)
+
+history <- model %>%
+  fit(
+    x = train_x,
+    y = train_y,
+    batch_size = 124,
+    validation_data = list(
+      val_x,
+      val_y
+    )
+  )
+
+plot(history)
+```
+
+
+```{r}
+pred_test <- as_tibble(predict(model, test_x)) %>%
+  set_names(levels(data_test$Attrition)) %>%
+  mutate(class = if_else(Yes > 0.5, "Yes", "No")) %>%
+  mutate(class = factor(class, levels = levels(data_test$Attrition))) %>%
+  set_names(paste0("pred_", colnames(.)))
+
+pred_test <- data_test %>%
+  select(Attrition) %>%
+  bind_cols(pred_test)
+
+summary(pred_test$pred_class)
+
+pred_test
+```
+
+
+```{r}
+pred_test %>%
+  conf_mat(Attrition, pred_class) %>%
+  autoplot(type = "heatmap")
+```
+
+
+```{r}
+# metrics summary
+pred_test %>%
+  summarise(
+    accuracy = accuracy_vec(Attrition, pred_class),
+    sensitivity = sens_vec(Attrition, pred_class),
+    specificity = spec_vec(Attrition, pred_class),
+    precision = precision_vec(Attrition, pred_class)
+  )
+```
+
+
+```{r}
+pred_test %>%
+  roc_curve(Attrition, pred_Yes) %>%
+  autoplot()
+```
+
+
+```{r}
+pred_test_roc <- pred_test %>%
+  roc_curve(Attrition, pred_Yes)
+
+p <- pred_test_roc %>%
+  mutate_if(~ is.numeric(.), ~ round(.,4)) %>%
+  gather(metric, value, -.threshold) %>%
+  ggplot(aes(.threshold, value)) +
+  geom_line(aes(colour = metric)) +
+  labs(x = "Probability Threshold to be Classified as Positive", y = "Value", colour = "Metrics") +
+  theme_minimal()
+
+ggplotly(p)
+
+
+```
+
+```{r}
+pred_test %>%
+  pr_curve(Attrition, pred_Yes) %>%
+  autoplot()
+```
+
+```{r}
+pred_test_pr <- pred_test %>%
+  pr_curve(Attrition, pred_Yes)
+
+p <- pred_test_pr %>%
+  mutate_if(~ is.numeric(.), ~ round(.,4)) %>%
+  gather(metric, value, -.threshold) %>%
+  ggplot(aes(.threshold, value)) +
+  geom_line(aes(colour = metric)) +
+  labs(x = "Probability Threshold to be Classified as Positive", y = "Value", colour = "Metrics") +
+  theme_minimal()
+
+ggplotly(p)
+
+```
+
+
+```{r}
+k_clear_session()
+```
+
