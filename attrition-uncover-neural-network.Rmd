@@ -14,6 +14,24 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+# Intro 
+
+## Background
+
+This is a fictional data set created by IBM data scientists. The target why they create this fictial data set, is to uncover the factors that lead to employee attrition. 
+
+In this case i would use specific question is, How to classify using neural network method and how is result of our model and predict classify and compare with our data test. Beside it we would try to uncover which feature 
+
+## Dataset
+
+Dataset we get from this [kaggle](https://www.kaggle.com/pavansubhasht/ibm-hr-analytics-attrition-dataset), this is an public dataset which mean everyone can access dataset.
+
+
+# Data Preparation
+
+## Import library
+
+In this step, we would like to preparing and wrangling data to help do this process and to help our modelling we need to import some package. We will use some wrangling package, some data processing and modelling package, and we need some visualize package.
 
 ```{r}
 library(tidyverse)
@@ -30,6 +48,9 @@ library(plotly)
 options(scipen = 100)
 ```
 
+## Read Data
+
+Import the dataset from CSV
 
 ```{r}
 employee <- read.csv("data/WA_Fn-UseC_-HR-Employee-Attrition.csv")
@@ -39,9 +60,60 @@ employee <- read.csv("data/WA_Fn-UseC_-HR-Employee-Attrition.csv")
 glimpse(employee)
 ```
 
+# Data Wrangling
+
+After import data we try to preview the data we have now. I use `summary` function to get summary from each feature
+
 ```{r}
 summary(employee)
 ```
+
+We have refrences from sourc that some feature containt leveling classification:    
+
+Education   
+  1. 'Below College'   
+  2. 'College'   
+  3. 'Bachelor'    
+  4. 'Master'    
+  5. 'Doctor'    
+
+EnvironmentSatisfaction
+  1. 'Low'    
+  2. 'Medium'    
+  3. 'High'    
+  4. 'Very High'    
+
+JobInvolvement
+  1. 'Low'    
+  2. 'Medium'   
+  3. 'High'    
+  4. 'Very High'    
+
+JobSatisfaction    
+  1. 'Low'    
+  2. 'Medium'    
+  3. 'High'    
+  4. 'Very High'    
+
+PerformanceRating    
+  1. 'Low'    
+  2. 'Good'    
+  3. 'Excellent'    
+  4. 'Outstanding'    
+ 
+RelationshipSatisfaction    
+  1. 'Low'    
+  2. 'Medium'    
+  3. 'High'    
+  4. 'Very High'    
+
+WorkLifeBalance    
+  1. 'Bad'    
+  2. 'Good'    
+  3. 'Better'    
+  4. 'Best'    
+
+Based on refrence abouve some of our feature have missmatch data type, so we will tro to convert some feature to be correct data type.    
 
 ```{r}
 employee <- employee %>%
@@ -54,44 +126,85 @@ employee <- employee %>%
     PerformanceRating = as.factor(PerformanceRating),
     RelationshipSatisfaction = as.factor(RelationshipSatisfaction),
     StockOptionLevel = as.factor(StockOptionLevel),
-    WorkLifeBalance = as.factor(WorkLifeBalance),
-    Attrition = factor(Attrition, levels = c("Yes", "No"))
+    WorkLifeBalance = as.factor(WorkLifeBalance)
   )
 
 summary(employee)
 ```
 
+`Attrition` is our target variable. we would set 'Yes' label as our positive value, means our priority target is to know which observation get 'Yes' label. We need to set the levels inside the structure data 'Yes' level more higher than 'No'.
+
+```{r}
+employee <- employee %>% 
+  mutate(
+    Attrition = factor(Attrition, levels = c("Yes", "No"))
+  )
+```
+
+Check NA or missing value value inside the datase
+
+```{r}
+table(is.na(employee))
+```
+
+Result is we dont have any NA or Missing value inside our dataset, Finally, we get our final starting dataset
+
 ```{r}
 str(employee)
 ```
 
+# Exploratory Data Analysis 
+
+We will observe if there is class imbalance by looking proportion of target variable `Attrition`
+
+```{r}
+prop.table(table(employee$Attrition))
+```
+
+Found there is imblance class in our target variable, which 'Yes' class is bigger than 'No' class and it really have big gap 83% compare 16%.     
+
+Based on this findings we need down or upsampling the dataset.
+
+# Modelling 
+
+## Cross-Validation
+
+We will split the data into training set, validation set, and testing set. first step we need to split dataset to be training and testing dataset.     
 
 ```{r}
 set.seed(100)
 
 initial_split <- initial_split(employee, prop = 0.8, strata = "Attrition")
-
-training_split <- initial_split(training(initial_split), prop = 0.8, strata = "Attrition")
 ```
 
+We will split our training dataset to be training dataset and validation dataset with proportion training dataset around 80% for training dan 20% for validation. Beside it we would downsample data
 
 ```{r}
-rec <- recipe(Attrition ~ ., training(training_split)) %>% 
+rec <- recipe(Attrition ~ ., training(initial_split)) %>% 
   step_rm(StandardHours, EmployeeCount, EmployeeNumber, Over18) %>% 
   step_nzv(all_predictors()) %>% 
-  step_downsample(Attrition, ratio = 1/1, seed = 100) %>% 
-  step_center(all_numeric()) %>% 
-  step_scale(all_numeric()) %>% 
+  step_upsample(Attrition, ratio = 1/1, seed = 100) %>% 
+  step_center(all_numeric(), -Attrition) %>% 
+  step_scale(all_numeric(), -Attrition) %>% 
   step_dummy(all_nominal(), -Attrition, one_hot = FALSE) %>% 
   prep(strings_as_factors = FALSE)
-
-
+set.seed(100)
 data_train <- juice(rec)
-data_val <- bake(rec, testing(training_split))
 data_test <- bake(rec, testing(initial_split))
-
+set.seed(100)
+test_split <- initial_split(data_test, prop = 0.5, strata = "Attrition")
+set.seed(100)
+data_val <- training(test_split)
+data_test <- testing(test_split)
 ```
 
+```{r}
+prop.table(table(data_train$Attrition))
+prop.table(table(data_val$Attrition))
+prop.table(table(data_test$Attrition))
+```
+
+We can see we downsample only data train and let real data for data validation and data test. We adjust the data to get a proper structure before we fed them into keras.     
 
 ```{r}
 train_y <- to_categorical(as.numeric(data_train$Attrition)-1)
@@ -110,6 +223,19 @@ test_x <- data_test %>%
   data.matrix()
 ```
 
+
+## Neural Network
+
+### Architecture: Multilayer Perceptron
+
+Neural Network is inspired by the biological neural network system of our brain. It consists of input layer, hidden layer, and output layer. The data will be fed into the input layer, processed through the hidden layer, and converted into specific values, such as probability, in the output layer. The MLP has a back-propagation feature, which means that it will go back and forth to adjust the weight of each connection between neurons in order to minimize the loss function and get better performance.
+
+```{r fig.align="center", echo=FALSE}
+knitr::include_graphics("./images/nn-architecture.png")
+```
+
+We will build several layers. There are layer dense which will scale our data using `relu` activation function in the first and second layer. I will put drouput layer to prevent the model from overfitting. For last layer, we scale back our dat int range [0,1] with `sigmoid` activation function asthe probability of our data belong to a particular class.
+
 ```{r}
 input_n <- ncol(train_x)
 
@@ -117,10 +243,10 @@ model <- keras_model_sequential() %>%
   layer_dense(input_shape = input_n,
               units = 62,
               activation = "relu") %>%
-  # layer_dropout(rate = 0.4) %>% 
+  # layer_dropout(rate = 0.4) %>%
   layer_dense(units = 32,
               activation = "relu") %>%
-  # layer_dropout(rate = 0.4) %>% 
+  # layer_dropout(rate = 0.4) %>%
   layer_dense(units = 2,
               activation = "sigmoid")
 
@@ -132,6 +258,7 @@ model %>%
 model
 ```
 
+### Model Fitting
 
 ```{r}
 set.seed(100)
@@ -141,6 +268,7 @@ history <- model %>%
     x = train_x,
     y = train_y,
     batch_size = 124,
+    verbose = 1,
     validation_data = list(
       val_x,
       val_y
@@ -150,6 +278,11 @@ history <- model %>%
 plot(history)
 ```
 
+Our Model get 70% accuracy on training dataset and 71% accuracy on validation dataset. We get the difference between it about 1% it still accaptable and can conclude that our model we made before isnt overfit.
+
+# Model Evaluation
+
+## Performance
 
 ```{r}
 pred_test <- as_tibble(predict(model, test_x)) %>%
@@ -167,6 +300,7 @@ summary(pred_test$pred_class)
 pred_test
 ```
 
+We will check confusion matrix from test dataset.
 
 ```{r}
 pred_test %>%
@@ -186,6 +320,8 @@ pred_test %>%
   )
 ```
 
+## Roc Curve
+
 
 ```{r}
 pred_test %>%
@@ -193,6 +329,13 @@ pred_test %>%
   autoplot()
 ```
 
+
+```{r}
+pred_test %>% 
+  roc_auc(Attrition, pred_Yes)
+```
+
+## Sensitivity - Specificty Curve
 
 ```{r}
 pred_test_roc <- pred_test %>%
@@ -207,9 +350,9 @@ p <- pred_test_roc %>%
   theme_minimal()
 
 ggplotly(p)
-
-
 ```
+
+## Precision - Recall Curve
 
 ```{r}
 pred_test %>%
