@@ -44,6 +44,7 @@ library(recipes)
 library(yardstick)
 library(caret)
 library(plotly)
+library(lime)
 
 options(scipen = 100)
 ```
@@ -173,32 +174,33 @@ We will split the data into training set, validation set, and testing set. first
 
 ```{r}
 set.seed(100)
-
 initial_split <- initial_split(employee, prop = 0.8, strata = "Attrition")
+
+set.seed(100)
+train_split <- initial_split(training(initial_split), prop = 0.8, strata = "Attrition")
 ```
 
 We will split our training dataset to be training dataset and validation dataset with proportion training dataset around 80% for training dan 20% for validation. Beside it we would downsample data
 
 ```{r}
-rec <- recipe(Attrition ~ ., training(initial_split)) %>% 
+rec <- recipe(Attrition ~ ., training(train_split)) %>% 
   step_rm(StandardHours, EmployeeCount, EmployeeNumber, Over18) %>% 
   step_nzv(all_predictors()) %>% 
   step_upsample(Attrition, ratio = 1/1, seed = 100) %>% 
-  step_center(all_numeric(), -Attrition) %>% 
-  step_scale(all_numeric(), -Attrition) %>% 
+  step_range(all_numeric(), min = 0, max = 1, -Attrition) %>%
+  # step_center(all_numeric()) %>%
+  # step_scale(all_numeric()) %>%
   step_dummy(all_nominal(), -Attrition, one_hot = FALSE) %>% 
   prep(strings_as_factors = FALSE)
-set.seed(100)
+
 data_train <- juice(rec)
+data_val <- bake(rec, testing(train_split))
 data_test <- bake(rec, testing(initial_split))
-set.seed(100)
-test_split <- initial_split(data_test, prop = 0.5, strata = "Attrition")
-set.seed(100)
-data_val <- training(test_split)
-data_test <- testing(test_split)
+
 ```
 
 ```{r}
+initial_split
 prop.table(table(data_train$Attrition))
 prop.table(table(data_val$Attrition))
 prop.table(table(data_test$Attrition))
@@ -207,17 +209,17 @@ prop.table(table(data_test$Attrition))
 We can see we downsample only data train and let real data for data validation and data test. We adjust the data to get a proper structure before we fed them into keras.     
 
 ```{r}
-train_y <- to_categorical(as.numeric(data_train$Attrition)-1)
+train_y <- as.numeric(data_train$Attrition)-1
 train_x <- data_train %>% 
   select(-Attrition) %>% 
   data.matrix()
 
-val_y <- to_categorical(as.numeric(data_val$Attrition)-1)
+val_y <- as.numeric(data_val$Attrition)-1
 val_x <- data_val %>% 
   select(-Attrition) %>% 
   data.matrix()
 
-test_y <- to_categorical(as.numeric(data_test$Attrition)-1)
+test_y <- as.numeric(data_test$Attrition)-1
 test_x <- data_test %>% 
   select(-Attrition) %>% 
   data.matrix()
@@ -241,13 +243,13 @@ input_n <- ncol(train_x)
 
 model <- keras_model_sequential() %>%
   layer_dense(input_shape = input_n,
-              units = 62,
+              units = 32,
               activation = "relu") %>%
-  # layer_dropout(rate = 0.4) %>%
-  layer_dense(units = 32,
+  layer_dense(units = 16,
               activation = "relu") %>%
-  # layer_dropout(rate = 0.4) %>%
-  layer_dense(units = 2,
+  # layer_dropout(rate = 0.1) %>%
+  # layer_batch_normalization() %>%
+  layer_dense(units = 1,
               activation = "sigmoid")
 
 model %>%
@@ -268,6 +270,8 @@ history <- model %>%
     x = train_x,
     y = train_y,
     batch_size = 124,
+    epochs = 10,
+    seed = 100,
     verbose = 1,
     validation_data = list(
       val_x,
@@ -278,7 +282,7 @@ history <- model %>%
 plot(history)
 ```
 
-Our Model get 70% accuracy on training dataset and 71% accuracy on validation dataset. We get the difference between it about 1% it still accaptable and can conclude that our model we made before isnt overfit.
+Our Model get 80% accuracy on training dataset and 67% accuracy on validation dataset. We get the difference between it about 13% it still accaptable and can conclude that our model we made before isnt overfit.
 
 # Model Evaluation
 
@@ -286,8 +290,8 @@ Our Model get 70% accuracy on training dataset and 71% accuracy on validation da
 
 ```{r}
 pred_test <- as_tibble(predict(model, test_x)) %>%
-  set_names(levels(data_test$Attrition)) %>%
-  mutate(class = if_else(Yes > 0.5, "Yes", "No")) %>%
+  set_names("value") %>%
+  mutate(class = if_else(value > 0.5, "No", "Yes")) %>%
   mutate(class = factor(class, levels = levels(data_test$Attrition))) %>%
   set_names(paste0("pred_", colnames(.)))
 
@@ -322,24 +326,23 @@ pred_test %>%
 
 ## Roc Curve
 
-
 ```{r}
 pred_test %>%
-  roc_curve(Attrition, pred_Yes) %>%
+  roc_curve(Attrition, pred_value) %>%
   autoplot()
 ```
 
 
 ```{r}
 pred_test %>% 
-  roc_auc(Attrition, pred_Yes)
+  roc_auc(Attrition, pred_value)
 ```
 
 ## Sensitivity - Specificty Curve
 
 ```{r}
 pred_test_roc <- pred_test %>%
-  roc_curve(Attrition, pred_Yes)
+  roc_curve(Attrition, pred_value)
 
 p <- pred_test_roc %>%
   mutate_if(~ is.numeric(.), ~ round(.,4)) %>%
@@ -356,13 +359,13 @@ ggplotly(p)
 
 ```{r}
 pred_test %>%
-  pr_curve(Attrition, pred_Yes) %>%
+  pr_curve(Attrition, pred_value) %>%
   autoplot()
 ```
 
 ```{r}
 pred_test_pr <- pred_test %>%
-  pr_curve(Attrition, pred_Yes)
+  pr_curve(Attrition, pred_value)
 
 p <- pred_test_pr %>%
   mutate_if(~ is.numeric(.), ~ round(.,4)) %>%
@@ -376,8 +379,42 @@ ggplotly(p)
 
 ```
 
+# Model Audit
 
 ```{r}
-k_clear_session()
+
 ```
+
+```{r}
+# choose explanation data
+data_explain <- testing(initial_split)
+
+# quick check
+data_explain
+
+get_features <- function(x) {
+  matrix <- data.matrix(bake(rec, x, -Attrition))
+  matrix
+}
+
+lime_model <- as_classifier(model)
+
+explainer <- lime(
+  x = data_explain,
+  model = lime_model,
+  preprocess = get_features
+)
+
+# get lime explanation
+# explanation <- explain(
+#   x = data_explain[1:20,],
+#   explainer = explainer,
+#   n_labels = 1,
+#   n_features = 5
+# )
+
+# plot feature explanation
+# plot_features(explanation, ncol = 1)
+```
+
 
