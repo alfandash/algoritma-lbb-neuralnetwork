@@ -20,7 +20,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 This is a fictional data set created by IBM data scientists. The target why they create this fictial data set, is to uncover the factors that lead to employee attrition. 
 
-In this case i would use specific question is, How to classify using neural network method and how is result of our model and predict classify and compare with our data test. Beside it we would try to uncover which feature 
+In this case i would use specific question is, How to classify using neural network method and how is result of our model and predict classify and compare with our data test. Beside it we would try to uncover which feature is important to understand employee attrition
 
 ## Dataset
 
@@ -33,7 +33,7 @@ Dataset we get from this [kaggle](https://www.kaggle.com/pavansubhasht/ibm-hr-an
 
 In this step, we would like to preparing and wrangling data to help do this process and to help our modelling we need to import some package. We will use some wrangling package, some data processing and modelling package, and we need some visualize package.
 
-```{r}
+```{r message=FALSE}
 library(tidyverse)
 library(ggplot2)
 library(GGally)
@@ -45,6 +45,9 @@ library(yardstick)
 library(caret)
 library(plotly)
 library(lime)
+library(scales)
+library(corrr)
+library(tidyquant)
 
 options(scipen = 100)
 ```
@@ -381,24 +384,20 @@ ggplotly(p)
 
 # Model Audit
 
-```{r}
+This process target is to understand how our model works to decide classification to our each observant. Why we need it? because Neural networks is “black box” nature meaning these sophisticated models. I will use `LIME` packages to intepret how it works.
 
-```
-
-```{r}
+```{r warning=FALSE}
 # choose explanation data
 data_explain <- testing(initial_split)
-
-# quick check
-data_explain
 
 get_features <- function(x) {
   matrix <- data.matrix(bake(rec, x, -Attrition))
   matrix
 }
 
-lime_model <- as_classifier(model)
+lime_model <- as_classifier(model, labels = levels(data_explain$Attrition))
 
+set.seed(100)
 explainer <- lime(
   x = data_explain,
   model = lime_model,
@@ -406,15 +405,118 @@ explainer <- lime(
 )
 
 # get lime explanation
-# explanation <- explain(
-#   x = data_explain[1:20,],
-#   explainer = explainer,
-#   n_labels = 1,
-#   n_features = 5
-# )
+explanation <- explain(
+  x = data_explain[1:4,],
+  explainer = explainer,
+  n_labels = 1,
+  n_features = 4
+)
 
 # plot feature explanation
-# plot_features(explanation, ncol = 1)
+
+plot_features(explanation) + 
+  labs(title = "LIME Feature Importance Visualization")
 ```
 
+Plot above i use `LIME` package to understand and get which feature are importance to our model decide the classification. This packages allows us to visualize each of the first 4 cases (observations) from the test data. The top four features for each case are shown. Note that they are not the same for each case. The blue bars mean that the feature supports the model conclusion, and the red bars contradict. A few important features based on frequency in first 4 cases:    
 
+  * Work Life Balance
+  * Business Travel Frequency
+  * Martial Status    
+  
+One thing we need to be careful with the LIME visualization is that we are only doing a sample of the data, in our case the first 4 test observations. Therefore, we are gaining a very localized understanding of how our models work. However, we also want to know on from a global perspective what drives feature importance.
+
+We can perform a correlation analysis on the training set as well to help glean what features correlate globally to “Attrition”. We’ll use the `corrr` package, which performs tidy correlations:    
+
+```{r}
+# Feature correlations to Churn
+corrr_analysis <- data.frame(train_x) %>%
+  mutate(Attrition = train_y) %>%
+  correlate() %>%
+  focus(Attrition) %>%
+  rename(feature = rowname) %>%
+  arrange(abs(Attrition)) %>%
+  mutate(feature = as_factor(feature)) 
+
+corrr_analysis <- corrr_analysis %>% 
+  mutate(absAttrition = abs(Attrition)) %>% 
+  arrange(desc(absAttrition)) %>% 
+  slice(1:20) %>% 
+  select(-absAttrition)
+
+corrr_analysis
+```
+
+```{r}
+# Correlation visualization
+corrr_analysis %>%
+  ggplot(aes(x = Attrition, y = fct_reorder(feature, desc(Attrition)))) +
+  geom_point() +
+  # Positive Correlations - Contribute to churn
+  geom_segment(aes(xend = 0, yend = feature), 
+               color = palette_light()[[2]], 
+               data = corrr_analysis %>% filter(Attrition > 0)) +
+  geom_point(color = palette_light()[[2]], 
+             data = corrr_analysis %>% filter(Attrition > 0)) +
+  # Negative Correlations - Prevent churn
+  geom_segment(aes(xend = 0, yend = feature), 
+               color = palette_light()[[1]], 
+               data = corrr_analysis %>% filter(Attrition < 0)) +
+  geom_point(color = palette_light()[[1]], 
+             data = corrr_analysis %>% filter(Attrition < 0)) +
+  # Vertical lines
+  geom_vline(xintercept = 0, color = palette_light()[[5]], size = 1, linetype = 2) +
+  geom_vline(xintercept = -0.25, color = palette_light()[[5]], size = 1, linetype = 2) +
+  geom_vline(xintercept = 0.25, color = palette_light()[[5]], size = 1, linetype = 2) +
+  # Aesthetics
+  theme_tq() +
+  labs(title = "Churn Correlation Analysis",
+       subtitle = paste("Positive Correlations (contribute to attrition),",
+                        "Negative Correlations (prevent attrition)"),
+       y = "Feature Importance")
+```
+
+The correlation analysis helps us quickly disseminate which features that the LIME analysis may be excluding. We can see that the following features are highly correlated (magnitude > 0.25):
+
+Increases Likelihood of Attrition (Red):
+  - Total Working Years
+  - Stock Option level = 1 (true)
+  - years in current Role
+  - Age
+  - Monthly Income
+
+Decreases Likelihood of Attrition (Black):
+  - Martial Status = Single
+  - Over Time = Yes
+  
+# Conclusion
+
+In this case i would use specific question is, How to classify using neural network method and how is result of our model and predict classify and compare with our data test. Beside it we would try to uncover which feature 
+
+The result evaluation we use Confussion Matrix as model evaluation and result is :
+
+```{r}
+# metrics summary
+pred_test %>%
+  summarise(
+    accuracy = accuracy_vec(Attrition, pred_class),
+    sensitivity = sens_vec(Attrition, pred_class),
+    specificity = spec_vec(Attrition, pred_class),
+    precision = precision_vec(Attrition, pred_class)
+  )
+```
+
+We can conclude our neural network working not good in this case, our model only good to predict "No" label which mean we cant anticipate employee will have Attrition. Several reason make the Neural Network cant running well using this data but major reason is Total observent its too small, and the data we get is imbalance.
+
+Therefore we can uncover which feature or variable have important to HR understand why employee get Attrition. Based on Intepret in model Audit we can conclude:    
+
+  - Total Working Years
+  - Stock Option level
+  - years in current Role
+  - Age
+  - Monthly Income
+  - Martial Status
+  - Over Time
+  
+Is variable or feature important to understand employee attrition
+  
